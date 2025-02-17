@@ -51,16 +51,15 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
 
 async def send_summary(context: CallbackContext) -> None:
     now = datetime.datetime.now()
-    if now.hour == 14:
+    if now.hour == 13:
         for chat_id, messages in user_messages.items():
             if messages:
                 try:
                     model = genai.GenerativeModel("gemini-2.0-flash")
                     response = model.generate_content(
                         f"Проаналізуй ці повідомлення:\n{messages}\n"
-                        "Визнач основні теми, які обговорювалися, і створи динамічний та емоційний список! "
-                        "Додай трохи гумору, емоцій або коментарів, щоб зробити його цікавішим. "
-                        "Видай лише список тем у маркованому форматі без зайвого тексту."
+                        "Визнач основні теми, які обговорювалися, і створи короткий список тем. "
+                        "Видай лише список тем у маркованому форматі без додаткового тексту."
                     )
                     summary = response.text if response.text else "Немає зібраних тем за сьогодні."
                     safe_summary = escape_markdown(summary, version=2)
