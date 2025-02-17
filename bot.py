@@ -3,6 +3,7 @@ import json
 import datetime
 import logging
 import google.generativeai as genai
+from datetime import time
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, CallbackContext
 from telegram.helpers import escape_markdown
@@ -38,11 +39,9 @@ user_messages = load_messages()
 async def handle_message(update: Update, context: CallbackContext) -> None:
     chat_id = str(update.message.chat_id)
     text = update.message.text
-
     bot_id = (await context.bot.get_me()).id
     if update.message.from_user.id == bot_id:
         return
-
     if chat_id not in user_messages:
         user_messages[chat_id] = []
     user_messages[chat_id].append(text)
@@ -51,7 +50,10 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
 
 async def send_summary(context: CallbackContext) -> None:
     now = datetime.datetime.now()
-    if now.hour == 13:
+    if now.hour == 20:
+        if not any(user_messages.values()):
+            logging.info("Немає повідомлень для підсумку.")
+            return
         for chat_id, messages in user_messages.items():
             if messages:
                 try:
@@ -62,15 +64,20 @@ async def send_summary(context: CallbackContext) -> None:
                         "Видай лише список тем у маркованому форматі без додаткового тексту."
                     )
                     summary = response.text if response.text else "Немає зібраних тем за сьогодні."
+                   
+                    if summary.strip() == "" or summary == "Немає зібраних тем за сьогодні.":
+                        logging.info(f"Немає тем для відправки в чат {chat_id}.")
+                        continue
                     safe_summary = escape_markdown(summary, version=2)
                     await context.bot.send_message(
                         chat_id,
                         f"📝 *Ось що сьогодні обговорювали:*\n{safe_summary}",
                         parse_mode="MarkdownV2"
                     )
-                    logging.info(f"Список тем відправлено в чат {chat_id}")
+                    logging.info(f"Список тем відправлено в чат {chat_id}.")
                 except Exception as e:
                     logging.error(f"Помилка генерації тем для {chat_id}: {e}")
+               
                 user_messages[chat_id] = []
                 save_messages()
 
@@ -78,7 +85,8 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     job_queue = app.job_queue
-    job_queue.run_repeating(send_summary, interval=60, first=0)
+
+    job_queue.run_repeating(send_summary, interval=3000, first=0)
     logging.info("Бот запущено...")
     app.run_polling()
 
