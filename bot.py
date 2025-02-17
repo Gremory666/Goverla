@@ -3,6 +3,7 @@ import json
 import datetime
 import logging
 import google.generativeai as genai
+from datetime import time
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, CallbackContext
 from telegram.helpers import escape_markdown
@@ -50,36 +51,34 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
     logging.info(f"Новe повідомлення від {chat_id}: {text}")
 
 async def send_summary(context: CallbackContext) -> None:
-    now = datetime.datetime.now()
-    if now.hour == 14:
-        for chat_id, messages in user_messages.items():
-            if messages:
-                try:
-                    model = genai.GenerativeModel("gemini-2.0-flash")
-                    response = model.generate_content(
-                        f"Проаналізуй ці повідомлення:\n{messages}\n"
-                        "Визнач основні теми, які обговорювалися, і створи динамічний та емоційний список! "
-                        "Додай трохи гумору, емоцій або коментарів, щоб зробити його цікавішим. "
-                        "Видай лише список тем у маркованому форматі без зайвого тексту."
-                    )
-                    summary = response.text if response.text else "Немає зібраних тем за сьогодні."
-                    safe_summary = escape_markdown(summary, version=2)
-                    await context.bot.send_message(
-                        chat_id,
-                        f"📝 *Ось що сьогодні обговорювали:*\n{safe_summary}",
-                        parse_mode="MarkdownV2"
-                    )
-                    logging.info(f"Список тем відправлено в чат {chat_id}")
-                except Exception as e:
-                    logging.error(f"Помилка генерації тем для {chat_id}: {e}")
-                user_messages[chat_id] = []
-                save_messages()
+    for chat_id, messages in user_messages.items():
+        if messages:
+            try:
+                model = genai.GenerativeModel("gemini-2.0-flash")
+                response = model.generate_content(
+                    f"Проаналізуй ці повідомлення:\n{messages}\n"
+                    "Визнач основні теми, які обговорювалися, і створи динамічний та емоційний список! "
+                    "Додай трохи гумору, емоцій або коментарів, щоб зробити його цікавішим. "
+                    "Видай лише список тем у маркованому форматі без зайвого тексту."
+                )
+                summary = response.text if response.text else "Немає зібраних тем за сьогодні."
+                safe_summary = escape_markdown(summary, version=2)
+                await context.bot.send_message(
+                    chat_id,
+                    f"📝 *Ось що сьогодні обговорювали:*\n{safe_summary}",
+                    parse_mode="MarkdownV2"
+                )
+                logging.info(f"Список тем відправлено в чат {chat_id}")
+            except Exception as e:
+                logging.error(f"Помилка генерації тем для {chat_id}: {e}")
+            user_messages[chat_id] = []
+            save_messages()
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     job_queue = app.job_queue
-    job_queue.run_repeating(send_summary, interval=60, first=0)
+    job_queue.run_daily(send_summary, time(hour=13, minute=0))
     logging.info("Бот запущено...")
     app.run_polling()
 
