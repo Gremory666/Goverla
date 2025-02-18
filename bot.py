@@ -113,7 +113,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("test_summary", test_summary))
     job_queue = app.job_queue
-    # Завдання через таймер запускається кожну хвилину
     job_queue.run_repeating(send_summary, interval=60, first=0)
     logging.info("Бот запущено...")
     app.run_polling()
