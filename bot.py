@@ -50,8 +50,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
 
 async def send_summary(context: CallbackContext) -> None:
     now = datetime.datetime.now()
-    # Якщо година 13, намагатимемось відправити підсумок
-    if now.hour == 13:
+    if now.hour == 20:
         if not any(user_messages.values()):
             logging.info("Немає повідомлень для підсумку.")
             return
