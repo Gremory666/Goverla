@@ -6,6 +6,7 @@ import logging
 from collections import Counter
 from zoneinfo import ZoneInfo
 
+import aiofiles
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import (
@@ -68,9 +69,13 @@ def censor_text(text: str) -> str:
     return " ".join("***" if word.lower() in BAD_WORDS else word for word in words)
 
 def extract_keywords(texts):
-    """Витягує топ-5 найчастіших слів із списку повідомлень."""
+    """
+    Витягує топ-5 найчастіших слів із списку повідомлень,
+    ігноруючи слова з менше ніж 3 літери.
+    """
     words = " ".join(texts).split()
-    common_words = Counter(words).most_common(5)
+    filtered_words = [word for word in words if len(word) >= 3]
+    common_words = Counter(filtered_words).most_common(5)
     return [word for word, _ in common_words]
 
 def load_messages():
@@ -88,25 +93,38 @@ def load_messages():
             logging.error(f"Помилка завантаження повідомлень: {e}")
     return {}
 
+# Синхронне збереження (залишаємо для сумісності)
 def save_messages():
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            # Перетворюємо datetime на рядок (ISO 8601) перед збереженням
             def datetime_serializer(obj):
                 if isinstance(obj, datetime.datetime):
                     return obj.isoformat()
                 raise TypeError("Type not serializable")
-
             json.dump(user_messages, f, ensure_ascii=False, indent=4, default=datetime_serializer)
+        logging.info("Синхронне збереження повідомлень успішне")
     except Exception as e:
         logging.error(f"Помилка збереження повідомлень: {e}")
+
+# Асинхронне збереження повідомлень
+async def async_save_messages():
+    try:
+        async with aiofiles.open(DATA_FILE, "w", encoding="utf-8") as f:
+            def datetime_serializer(obj):
+                if isinstance(obj, datetime.datetime):
+                    return obj.isoformat()
+                raise TypeError("Type not serializable")
+            data = json.dumps(user_messages, ensure_ascii=False, indent=4, default=datetime_serializer)
+            await f.write(data)
+        logging.info("Асинхронне збереження повідомлень успішне")
+    except Exception as e:
+        logging.error(f"Помилка при асинхронному збереженні: {e}")
 
 # Завантаження повідомлень під час запуску
 user_messages = load_messages()
 
 # Набір ключових слів для виявлення важливих повідомлень
 important_keywords = {"важливо", "терміново", "допоможіть", "проблема"}
-
 
 async def handle_message(update: Update, context: CallbackContext) -> None:
     chat_id = str(update.message.chat.id)
@@ -123,7 +141,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
         return
 
     user_messages.setdefault(chat_id, []).append({"text": text, "timestamp": datetime.datetime.now()})
-    save_messages()
+    await async_save_messages()
     logging.info(f"Повідомлення збережено для чату {chat_id}: {text}")
 
 async def show_stats(update: Update, context: CallbackContext) -> None:
@@ -146,10 +164,7 @@ async def show_stats(update: Update, context: CallbackContext) -> None:
     message_text = f"{stats_header}\n{messages_line}\n{words_line}\n{keywords_label} {keywords_str}"
     logging.info(f"Текст перед відправкою: {message_text}")
 
-    await update.message.reply_text(
-        message_text,
-        parse_mode="MarkdownV2"
-    )
+    await update.message.reply_text(message_text, parse_mode="MarkdownV2")
 
 async def remind(update: Update, context: CallbackContext) -> None:
     try:
@@ -175,14 +190,18 @@ async def remind(update: Update, context: CallbackContext) -> None:
     except ValueError:
         await update.message.reply_text("Помилка! Використовуйте число для часу.")
 
+async def clear_chat_history(chat_id: str):
+    """Очищує історію повідомлень для заданого chat_id."""
+    if chat_id in user_messages:
+        logging.info(f"Очищення повідомлень для чату {chat_id}: {user_messages[chat_id]}")
+        del user_messages[chat_id]
+        await async_save_messages()
+        logging.info(f"Історія чату {chat_id} очищена")
+    else:
+        logging.info(f"Немає повідомлень для очищення в чаті {chat_id}")
 
 async def send_summary(context: CallbackContext, clear_history: bool = True) -> None:
-    """Надсилає резюме повідомлень.
-
-    Args:
-        context: Об'єкт CallbackContext.
-        clear_history: Чи очищати історію повідомлень після надсилання (за замовчуванням True).
-    """
+    """Надсилає резюме повідомлень."""
     global user_messages
 
     for chat_id in list(user_messages.keys()):
@@ -195,7 +214,7 @@ async def send_summary(context: CallbackContext, clear_history: bool = True) -> 
 
         prompt = (
             f"Ось повідомлення чату:\n{message_texts}\n\n"
-            "Сформулюй коротке резюме того, що обговорювали, у 2-5 реченнях, "
+            "Сформулюй коротке резюме того, що обговорювали, у 2-3 реченнях, "
             "а потім додай список основних тем у маркованому форматі."
         )
         try:
@@ -209,17 +228,12 @@ async def send_summary(context: CallbackContext, clear_history: bool = True) -> 
         keywords = extract_keywords(messages)
         keywords_str = re.escape(", ".join(keywords))
 
-        # Екрануємо ai_summary ПЕРЕД об'єднанням
         ai_summary = re.escape(ai_summary)
-
         summary_text = ai_summary + f"\n\n📌 Ключові слова: {keywords_str}"
         if imp_msgs:
-          imp_msgs_str = "\n".join(imp_msgs)
-          # Екрануємо imp_msgs_str ПЕРЕД додаванням
-          imp_msgs_str = re.escape(imp_msgs_str)
-
-          summary_text += f"\n\n🚨 Важливі повідомлення:\n{imp_msgs_str}"
-
+            imp_msgs_str = "\n".join(imp_msgs)
+            imp_msgs_str = re.escape(imp_msgs_str)
+            summary_text += f"\n\n🚨 Важливі повідомлення:\n{imp_msgs_str}"
 
         try:
             await context.bot.send_message(chat_id, summary_text, parse_mode="MarkdownV2")
@@ -228,9 +242,7 @@ async def send_summary(context: CallbackContext, clear_history: bool = True) -> 
             logging.error(f"Помилка під час відправлення повідомлення в чат {chat_id}: {e}")
 
         if clear_history:
-            del user_messages[chat_id]
-            save_messages()
-
+            await clear_chat_history(chat_id)
 
 async def summarize(update: Update, context: CallbackContext) -> None:
     """Обробник команди /summarize."""
@@ -246,23 +258,38 @@ async def summarize(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text("Немає повідомлень для підсумку.")
         return
 
-    # Викликаємо send_summary з clear_history=False
-    await send_summary(context, clear_history=True)
+    # Викликаємо send_summary з clear_history=False для команди /summarize,
+    # щоб зберегти історію повідомлень, якщо це необхідно.
+    await send_summary(context, clear_history=False)
 
+async def clear_history_command(update: Update, context: CallbackContext) -> None:
+    """Обробник команди /clear для примусового очищення історії повідомлень."""
+    chat_id = str(update.message.chat.id)
+    await clear_chat_history(chat_id)
+    await update.message.reply_text("Історія повідомлень очищена!")
+
+async def error_handler(update: object, context: CallbackContext) -> None:
+    """Глобальний обробник помилок."""
+    logging.error(msg="Exception while handling an update:", exc_info=context.error)
 
 def main():
+    # Створення Application без drop_pending_updates через builder
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("remind", remind))
     app.add_handler(CommandHandler("summarize", summarize))
+    app.add_handler(CommandHandler("clear", clear_history_command))
+    app.add_error_handler(error_handler)
 
+    # Щоденне надсилання підсумку о 21:00 за київським часом
     time = datetime.time(hour=21, minute=0, second=0, tzinfo=ZoneInfo("Europe/Kiev"))
     app.job_queue.run_daily(send_summary, time, days=(0, 1, 2, 3, 4, 5, 6))
 
     logging.info("Бот запущено...")
-    app.run_polling()
+    # Передаємо drop_pending_updates безпосередньо у run_polling
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
